@@ -1,0 +1,190 @@
+---
+title: "Data-Cleaning-DiD-TOD"
+author: "MUSA Project Team + Nilsson"
+date: "2025-08-13"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+---
+
+This code is used for cleaning the data. The data provided by the Mecklenburg County is rather messy, so this code attempts at standardizing the data. This code will NOT run any of the models.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+Load necessary libraries here.
+
+```{r libraries}
+library(sf)
+library(lubridate)
+library(dplyr)
+library(purrr)
+```
+------------------- DO NOT RUN IF YOU HAVE ALREADY GOTTEN FILTERED FILES -----------------
+
+Section for standardizing data when each year is under a folder of its own, and the folder's naming convention is consistent. You will need to fix your folder's names by hand (unfortunately), and if there are multiple year's worth of shapefile under one folder, this code will not be able to name them separately.
+
+```{r}
+# Set your target directory here (use forward slashes or double backslashes on Windows)
+target_directory <- "YOUR DIRECTORY"  # Change this to your directory
+
+# Function to rename files in subdirectories to match parent folder name
+rename_files_to_folder <- function(root_dir) {
+  # Get list of all subdirectories
+  subdirs <- list.dirs(root_dir, recursive = FALSE)
+  
+  if (length(subdirs) == 0) {
+    message("No subdirectories found in: ", root_dir)
+    return(invisible())
+  }
+  
+  # Process each subdirectory
+  for (dir in subdirs) {
+    # Get all files in the directory (excluding subdirectories)
+    files <- list.files(dir, full.names = TRUE, recursive = FALSE, include.dirs = FALSE)
+    
+    if (length(files) == 0) {
+      next
+    }
+    
+    # Get the folder name (last part of the path)
+    folder_name <- basename(dir)
+    
+    # Process each file
+    for (file in files) {
+      # Get file extension
+      ext <- tools::file_ext(file)
+      
+      # Construct new filename
+      if (nchar(ext) > 0) {
+        new_name <- file.path(dir, paste0(folder_name, ".", ext))
+      } else {
+        new_name <- file.path(dir, folder_name)
+      }
+      
+      # Rename the file (only if names are different)
+      if (file != new_name) {
+        file.rename(file, new_name)
+      }
+    }
+  }
+}
+
+# Verify directory exists
+if (!dir.exists(target_directory)) {
+  stop("Directory does not exist: ", target_directory)
+}
+
+# Run the function
+rename_files_to_folder(target_directory)
+```
+
+------------------- DO NOT RUN IF YOU HAVE ALREADY GOTTEN FILTERED FILES -----------------
+
+The following code loads the shapefile (BY YEAR), applies basic filters, and transforms it into a csv. 
+
+```{r}
+input_folder <- "YOUR FOLDER"
+output_folder <- "YOUR FOLDER"  # Folder where all CSVs will be saved
+station_file = "YOUR FILE PATH"
+
+stations <- st_read(station_file) %>%
+  filter(StationTyp == "Blue Line Extension Station") %>% # Filter for only extension stations
+  st_transform(crs = 2264) # Transform for buffer creations
+
+if (!dir.exists(output_folder)) {
+  dir.create(output_folder)
+}
+
+# Create half-mile buffer (2640 feet)
+station_buffer <- st_buffer(stations, dist = 2640) %>%
+  st_union()  # Combine all buffers into single polygon
+
+taxdata = st_read("YOUR DIRECTORY")%>% #<------------ CHANGE YEAR HERE
+  # Convert all column names to lowercase
+  setNames(tolower(names(.))) 
+
+taxdata = taxdata%>%
+  st_transform(crs = 2264) %>% # Transform to target CRS (EPSG 2264)
+  filter(year(dateofsale) == 2023, ##<------------------------------------------------------------------------------- CHANGE YEAR HERE
+         descbuildi == "RES",
+         price > 10000,
+         price < 10000000,
+         yearbuilt > 1800,
+         yearbuilt < 2024,
+         heatedarea > 100,
+         heatedarea < 10000,
+         fullbaths > 0,
+         fullbaths < 10,
+         bedrooms > 0,
+         bedrooms < 10,
+         municipali != "NA")
+
+centroids <- st_centroid(taxdata)
+centroid_coords <- st_coordinates(centroids)
+taxdata$long <- centroid_coords[, "X"]
+taxdata$lat <- centroid_coords[, "Y"]
+taxdata$lot_sqf <- st_area(taxdata) #totalac contains A LOT of zeros so calculate lot size based on parcel polygon size
+taxdata$lot_ac <- taxdata$lot_sqf/43560 #corresponds with totalac where not zero so use this one
+taxdata$year <- 2023 ##<-------------------------------------------------------------------------------------------- CHANGE YEAR HERE
+taxdata$age <- (taxdata$year - taxdata$yearbuilt)
+
+# 3. Add TOD classification ----
+# Check if geometry intersects with station buffer
+intersects_buffer <- st_intersects(taxdata, station_buffer, sparse = FALSE)[,1]
+
+taxdata <- taxdata %>%
+        mutate(treatment = ifelse(intersects_buffer, "treat", "notreat"),
+               treat = ifelse(intersects_buffer, 1, 0)) %>%
+        # Drop geometry column before writing to CSV
+        st_drop_geometry()
+      
+      # 4. Write to CSV ----
+write.csv(taxdata, "OUTPUT PATH", row.names = FALSE) #<---CHANGE YEAR HERE
+```
+
+----------------------- RUN FROM HERE IF YOU ALREADY HAVE FILTERED CSVs -----------------------
+
+Import filtered files and append them together. NOTE: Delete Taxdata_csvs.csv from the folder first. 
+```{r} 
+# Set the path to the directory containing the CSV files
+csv_directory <- "YOUR DIRECTORY"
+
+# List all CSV files in the directory
+csv_files <- list.files(path = csv_directory, pattern = "\\.csv$", full.names = TRUE)
+
+# Define the columns you want to select (e.g., "Column1", "Column2")
+columns_to_select <- c("year", "dateofsale", "taxpid", "commonpid", "pid", "totalac", "lot_sqf","lot_ac", "totalvalue", "netbldgval", "price",
+                       "yearbuilt", "age", "heatedarea", "bedrooms", "fullbaths", "numfirepla", "storyheigh", "extwall", "foundation", "bldggrade",
+                       "aheatingty", "heatedfuel", "actype", "houseno", "stname", "sttype", "municipali", "landusecod", "neighbourh", "long",
+                       "lat", "treatment", "treat")
+
+# Read, select columns, and combine
+cdf <- lapply(csv_files, function(file) {
+  read.csv(file) %>%
+    select(all_of(columns_to_select))%>%
+    mutate(houseno = as.character(houseno),
+           commonpid = as.character(commonpid),
+           pid = as.character(pid),
+           taxpid = as.character(taxpid))
+}) %>%
+  bind_rows()
+```
+
+Now, some additional cleaning and done!
+
+```{r}
+cdf = cdf%>%
+  mutate(pricesqf = price/heatedarea)%>%
+  filter(lot_sqf >= 3500, #smallest allowable SF lot size in CLT is 3500 sqf (only in certain zoning districts)
+         pricesqf < 8000,
+         numfirepla < 10)
+
+write.csv(cdf, "OUTPUT FILE", row.names = FALSE)
+```
+

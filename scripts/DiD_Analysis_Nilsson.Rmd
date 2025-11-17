@@ -1,0 +1,1146 @@
+---
+title: "DiD_Analysis_Nilsson"
+author: "Isabelle Nilsson"
+date: "2025-08-13"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Setup
+
+```{r load_packages}
+library(tidyverse)
+library(data.table)
+library(MatchIt)  # For PSM and CEM
+library(optmatch)
+library(lmtest)   # For robust standard errors
+library(sandwich) # For robust standard errors
+library(knitr)    # For table formatting
+library(kableExtra) # For enhanced table formatting
+library(car)      # For linearHypothesis function in parallel trends test
+library(quantreg)
+library(tidycensus)
+library(tigris)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(viridis)
+library(units)
+library(purrr)
+library(tidyr)
+library(gt)
+library(broom)
+library(flextable)
+library(officer)
+library(patchwork)
+library(here)
+```
+
+```{r setup}
+options(scipen = 999)
+```
+
+```{r load_data}
+combined_data <- fread(here("combined_taxdata_2004_2023_clean.csv"))
+```
+
+## Convert to point data, get tract level census data, take out homes that cannot serve as either treatment or controls in any scenario, and map the data to make sure nothing funky is going on
+
+```{r}
+options(tigris_use_cache = TRUE)
+census_api_key("YOUR KEY HERE")
+vars <- c(
+  pop = "B01003_001", # Total population
+  white = "B02001_002", # white alone population
+  black = "B02001_003", # black alone population
+  m25over = "B15002_002", # 25 yrs & over - male 
+  mbach = "B15002_015", # bachelor's degree - male
+  mmast = "B15002_016", # master's degree - male
+  mprof = "B15002_017", # prof school degree - male
+  mdoc = "B15002_018", # doctoral degree - male
+  f25over = "B15002_019", # 25 yrs & over - female 
+  fbach = "B15002_032", # bachelor's degree - female
+  fmast = "B15002_033", # master's degree - female
+  fprof = "B15002_034", # prof school degree - female
+  fdoc = "B15002_035", # doctoral degree - female
+  m1619lf = "B23001_006", # 16-19 in civ LF - male
+  m1619emp = "B23001_007", # 16-19 emp - male
+  m2021lf = "B23001_013", # 20-21 in civ LF - male
+  m2021emp = "B23001_014", # 20-21 emp - male
+  m2224lf = "B23001_020", # 22-24 in civ LF - male
+  m2224emp = "B23001_021", # 22-24 emp - male
+  m2529lf = "B23001_027", # 25-29 in civ LF - male
+  m2529emp = "B23001_028", # 25-29 emp - male
+  m3034lf = "B23001_034", # 30-34 in civ LF - male
+  m3034emp = "B23001_035", # 30-34 emp - male
+  m3544lf = "B23001_041", # 35-44 in civ LF - male
+  m3544emp = "B23001_042", # 35-44 emp - male
+  m4554lf = "B23001_048", # 45-54 in civ LF - male
+  m4554emp = "B23001_049", # 45-54 emp - male
+  m5559lf = "B23001_055", # 55-59 in civ LF - male
+  m5559emp = "B23001_056", # 55-59 emp - male
+  m6061lf = "B23001_062", # 60-61 in civ LF - male
+  m6061emp = "B23001_063", # 60-61 emp - male
+  m6264lf = "B23001_069", # 62-64 in civ LF - male
+  m6264emp = "B23001_070", # 62-64 emp - male
+  m6569lf = "B23001_074", # 65-69 in civ LF - male
+  m6569emp = "B23001_075", # 65-69 emp - male
+  m7074lf = "B23001_079", # 70-74 in civ LF - male
+  m7074emp = "B23001_080", # 70-74 emp - male
+  m75lf = "B23001_084", # 75 and over in civ LF - male
+  m75emp = "B23001_085", # 75 and over emp - male
+  f1619lf = "B23001_092", # 16-19 in civ LF - female
+  f1619emp = "B23001_093", # 16-19 emp - female
+  f2021lf = "B23001_099", # 20-21 in civ LF - female
+  f2021emp = "B23001_100", # 20-21 emp - female
+  f2224lf = "B23001_106", # 22-24 in civ LF - female
+  f2224emp = "B23001_107", # 22-24 emp - female
+  f2529lf = "B23001_113", # 25-29 in civ LF - female
+  f2529emp = "B23001_114", # 25-29 emp - female
+  f3034lf = "B23001_120", # 30-34 in civ LF - female
+  f3034emp = "B23001_121", # 30-34 emp - female
+  f3544lf = "B23001_127", # 35-44 in civ LF - female
+  f3544emp = "B23001_128", # 35-44 emp - female
+  f4554lf = "B23001_134", # 45-54 in civ LF - female
+  f4554emp = "B23001_135", # 45-54 emp - female
+  f5559lf = "B23001_141", # 55-59 in civ LF - female
+  f5559emp = "B23001_142", # 55-59 emp - female
+  f6061lf = "B23001_148", # 60-61 in civ LF - female
+  f6061emp = "B23001_149", # 60-61 emp - female
+  f6264lf = "B23001_155", # 62-64 in civ LF - female
+  f6264emp = "B23001_156", # 62-64 emp - female
+  f6569lf = "B23001_160", # 65-69 in civ LF - female
+  f6569emp = "B23001_161", # 65-69 emp - female
+  f7074lf = "B23001_165", # 70-74 in civ LF - female
+  f7074emp = "B23001_166", # 70-74 emp - female
+  f75lf = "B23001_170", # 75 and over in civ LF - female
+  f75emp = "B23001_171", # 75 and over emp - female
+  tothu = "B25001_001", # Total housing units (for density calculations)
+  totocc = "B25003_001", # Total occupied housing units
+  ownocc = "B25003_002", # Total owner occupied housing units
+  medhhinc = "B19013_001" # Median household income (in dollars)
+)
+
+# Base map: Mecklenburg County tracts (outline only) 
+meck_tracts <- get_acs(
+  geography = "tract",
+  variables = vars,  
+  state = "NC",
+  county = "Mecklenburg",
+  year = 2009,
+  survey = "acs5",
+  geometry = TRUE
+) |>
+  st_transform(crs = 2264)
+
+mecktrt <- meck_tracts %>% #one row per tract, multiple columns for variables
+  select(GEOID, NAME, variable, estimate) %>%
+  tidyr::pivot_wider(names_from = variable, values_from = estimate)
+
+mecktrt$area_f2 <- st_area(mecktrt) #sqf of tracts
+mecktrt$area_m2 <- as.numeric(mecktrt$area_f2/27878400) #sq mile of tracts
+mecktrt$popden <- mecktrt$pop/mecktrt$area_m2 #population per square mile
+mecktrt$huden <- mecktrt$tothu/mecktrt$area_m2 #housing units per square mile
+mecktrt$ownoccp <- (mecktrt$ownocc/mecktrt$totocc)*100 #percent owner occupied housing
+mecktrt$whitep <- (mecktrt$white/mecktrt$pop)*100 #percent white
+mecktrt$blackp <- (mecktrt$black/mecktrt$pop)*100 #percent black
+mecktrt$bachp <-  ((mecktrt$mbach+mecktrt$fbach+mecktrt$mmast+mecktrt$fmast+mecktrt$mprof+mecktrt$fprof+mecktrt$mdoc+mecktrt$fdoc)/
+                     (mecktrt$m25over + mecktrt$f25over))*100 #percent 25 and over with a bachelor's or higher 
+mecktrt$lf <- (mecktrt$m1619lf+mecktrt$m2021lf+mecktrt$m2224lf+mecktrt$m2529lf+mecktrt$m3034lf+mecktrt$m3544lf+mecktrt$m4554lf+
+                 mecktrt$m5559lf+mecktrt$m6061lf+mecktrt$m6264lf+mecktrt$m6569lf+mecktrt$m7074lf+mecktrt$m75lf+
+                 mecktrt$f1619lf+mecktrt$f2021lf+mecktrt$f2224lf+mecktrt$f2529lf+mecktrt$f3034lf+mecktrt$f3544lf+
+                 mecktrt$f4554lf+mecktrt$f5559lf+mecktrt$f6061lf+mecktrt$f6264lf+mecktrt$f6569lf+mecktrt$f7074lf+mecktrt$f75lf) #people 16 and over in civilian lf
+mecktrt$emp <- (mecktrt$m1619emp+mecktrt$m2021emp+mecktrt$m2224emp+mecktrt$m2529emp+mecktrt$m3034emp+mecktrt$m3544emp+
+                  mecktrt$m4554emp+mecktrt$m5559emp+mecktrt$m6061emp+mecktrt$m6264emp+mecktrt$m6569emp+mecktrt$m7074emp+mecktrt$m75emp+
+                  mecktrt$f1619emp+mecktrt$f2021emp+mecktrt$f2224emp+mecktrt$f2529emp+mecktrt$f3034emp+mecktrt$f3544emp+mecktrt$f4554emp+
+                  mecktrt$f5559emp+mecktrt$f6061emp+mecktrt$f6264emp+mecktrt$f6569emp+mecktrt$f7074emp+mecktrt$f75emp) #people 16 and over employed in civilian lf
+mecktrt$emprate <- (mecktrt$emp/mecktrt$lf)*100 #employment rate
+
+# Read the city center CSV (EPSG:4326)
+city_center_raw <- read_csv(here("cltcc.csv"), show_col_types = FALSE)
+
+city_center_4326 <- st_as_sf(
+  city_center_raw,
+  coords = c("lon", "lat"),  
+  crs = 4326                 # EPSG:4326 (WGS84)
+)
+
+# Reproject city center to match the properties CRS
+city_center <- st_transform(city_center_4326, st_crs(mecktrt))
+
+# Compute distance from each tract to the city center 
+distances <- st_distance(mecktrt, city_center)  # vector of distances with units
+
+# Add distances as new columns
+mecktrt <- mecktrt %>%
+  mutate(distcc_mi_trt = as.numeric(set_units(distances, "mi"))) # in miles
+
+mecktrt <- mecktrt[ , c("GEOID","geometry","popden","huden","ownoccp","emprate","whitep","blackp","bachp","medhhinc","distcc_mi_trt")] #select only useful variables
+
+# Remove tracts with missing data on any variables
+mecktrt <- mecktrt %>%
+  filter(if_all(everything(), ~ !is.na(.)))
+
+# Build sf points
+pts_sf <- st_as_sf(combined_data, coords = c("long", "lat"), crs = 2264)
+
+# Only keep points that intersect tracts with data
+pts_sf <- pts_sf[lengths(st_within(pts_sf, mecktrt)) > 0, ]
+
+
+
+stations_sf <- st_read(here("LYNX_Blue_Line_Stations.shp")) %>%
+  filter(StationTyp == "Blue Line Extension Station") %>% # Filter for only extension stations
+  st_transform(crs = 2264)
+
+# 1/2 mile (2,640 feet) buffers in EPSG:2264
+buffers_1_2_mi <- st_buffer(stations_sf, dist = 2640)%>%
+  st_union()  # Combine all buffers into single polygon
+
+# Need to ensure that no treatments are within 1.5mile of existing stations and that no controls are within 1.5 mile of #an existing or new station
+allstations <- st_read(here("LYNX_Blue_Line_Stations.shp")) %>%
+  st_transform(crs = 2264)
+
+nogo <- st_buffer(allstations, dist = 7920)%>%
+  st_union()  # Combine all buffers into single polygon
+
+# Assign NO control status to properties that intersects 1.5mile buffer of ANY station (new or old)
+intersects_buffer1 <- st_intersects(pts_sf, nogo, sparse = FALSE)[,1]
+
+pts_sf <- pts_sf %>%
+        mutate(noctrl = ifelse(intersects_buffer1, 1, 0))
+
+# Assign NO treatment status to properties that intersects 1.5mile buffer of old stations
+oldstations <- allstations %>%
+  filter(StationTyp == "Blue Line Station")
+
+notr <- st_buffer(oldstations, dist = 7920)%>%
+  st_union()  # Combine all buffers into single polygon
+
+intersects_buffer2 <- st_intersects(pts_sf, notr, sparse = FALSE)[,1]
+
+pts_sf <- pts_sf %>%
+        mutate(notreat = ifelse(intersects_buffer2, 1, 0))
+
+# Drop observations where notreat == 1 (since these can't serve as neither treatment nor controls)  
+pts_sf <- pts_sf %>%
+  filter(notreat == 0)
+
+# Also drop all that are 0.5-1.5mile from new station (since these can't serve as neither treatment nor controls) 
+buf_15 <- st_buffer(stations_sf, dist = 7920)%>%
+  st_union()  # Combine all buffers into single polygon
+
+buf_donut1 <- st_difference(buf_15, buffers_1_2_mi)%>%
+  st_union()  # Combine all donuts into single polygon
+
+intersects_buffer3 <- st_intersects(pts_sf, buf_donut1, sparse = FALSE)[,1]
+
+pts_sf <- pts_sf %>%
+        mutate(notc = ifelse(intersects_buffer3, 1, 0))
+
+# Drop observations where notc == 1  
+pts_sf <- pts_sf %>%
+  filter(notc == 0)
+
+# And now we can drop the noctrl, notreat, and notc columns plus some other columns that we won't be using to minimize data size
+pts_sf <- pts_sf %>%
+  select(-noctrl, -notreat, -notc, -houseno, -stname, -sttype, -municipali, -landusecod, -neighbourh, -treatment, -taxpid, -commonpid, -pid)
+
+# Plot: tract outlines + discretely colored points
+restplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = pts_sf, aes(color = as.factor(pts_sf$treat)), size = 1, alpha = 0.7) +
+  geom_sf(data = allstations, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    title = "Rest of county"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+restplot
+```
+Assign neighborhoods (tracts) a treatment variable - considered treated if it has treated housing units in it - don't use the treatment buffer since it overlaps with existing station buffers
+
+```{r}
+# Find tracts that intersect at least one point
+pts_treat <- pts_sf %>% 
+  filter(treat == 1)
+
+mecktrt <- mecktrt %>%
+  mutate(treattrt = ifelse(lengths(st_intersects(., pts_treat)) > 0, 1, 0))
+
+ggplot() +
+  geom_sf(data = mecktrt, aes(fill = factor(treattrt)), color = "white", size = 0.1) +
+  geom_sf(data = pts_treat, color = "#C71585", size = 1, shape = 16, alpha=0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    name = "Contains treated property",
+    values = c("0" = "lightgray", "1" = "steelblue"),
+    labels = c("No", "Yes")
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+  ) +
+  labs(title = "Treated tracts")
+```
+
+Join pre-treatment neighborhood characteristics to pts_sf using earliest ACS data which would be the 2005-2009 ACS, which corresponds to year = 2009 when using survey = "acs5". This is pre-opening so should be fine. Include:
+--- population density (popden)
+--- housing density (huden)
+--- %owner occupied units (ownoccp)
+--- employment rates (emprate)
+--- %white population (whitep)
+--- %black population (blackp)
+--- %bachelors degree (bachp)
+
+```{r}
+pts_sf <- st_join(pts_sf, mecktrt, join = st_within)
+```
+
+Going to want distance to city center as a matching parameter (and control in other regressions):
+
+```{r}
+# Compute distance from each property to the city center 
+distances <- st_distance(pts_sf, city_center)  # vector of distances with units
+
+# Add distances as new columns
+pts_sf <- pts_sf %>%
+  mutate(distcc_mi = as.numeric(set_units(distances, "mi"))) # in miles
+```
+
+ Specs:
+- Treatment Group: Homes within 0.5-mile buffer but not within 1.5mile of existing station (i.e., where treat == 1)
+- Pre-opening: 2004-2017 #opened in 2018
+- Post-opening: 2018-2023
+- Control groups to be tested:
+--- all homes outside 1.5mile of existing or new stations (i.e., where treat == 0)
+--- homes 1.5-2miles from station (i.e., where distctrl == 1)
+--- homes within 0.5-mile buffer of planned stations (i.e., where planctrl == 1)
+--- PSM-matched homes
+--- CEM-matched homes
+
+Create indicator variable for post opening:
+
+```{r}
+# Create post indicators
+pts_sf <- pts_sf %>%
+  mutate(
+    postopen = ifelse(year > 2017, 1, 0)
+  )
+```
+
+Set up distance based controls:
+
+```{r}
+# Create 1.5-2mile donut buffer
+# Distances in feet
+mile_1_5   <- 7920
+mile_2 <- 10560
+
+# Create buffers
+buf_outer <- st_buffer(stations_sf, dist = mile_2)%>%
+  st_union()  # Combine all buffers into single polygon
+buf_inner <- st_buffer(stations_sf, dist = mile_1_5)%>%
+  st_union()  # Combine all buffers into single polygon
+
+# Donut = outer buffer minus inner buffer
+buf_donut <- st_difference(buf_outer, buf_inner)%>%
+  st_union()  # Combine all donuts into single polygon
+
+# Assign control status to properties that intersects donut buffer
+intersects_buffer <- st_intersects(pts_sf, buf_donut, sparse = FALSE)[,1]
+
+pts_sf <- pts_sf %>%
+        mutate(distctrl = ifelse(intersects_buffer, 1, 0))
+
+distbas <- pts_sf[pts_sf$treat == 1 | pts_sf$distctrl == 1, ]
+
+# Plot to check
+distplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = distbas, aes(color = as.factor(distbas$treat)), size = 1, alpha=0.7) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  geom_sf(data = buf_donut, fill = NA, color = "orange", linewidth = 0.3) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    title = "Distance"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+distplot
+```
+Setup planned stations control group (Silver Line: https://data.charlottenc.gov/datasets/6bbc1527656b44c9b1b4836b3d54513b_0/explore)
+
+```{r}
+# Read train station shapefile
+station_path1 = "/Users/inilsso1_1/Library/CloudStorage/GoogleDrive-inilsso1@charlotte.edu/My Drive/Research/Transit_Induced_Displacement/Bookchapter/datascripts/LYNX_Silver_Line_Stations_Proposed/LYNX_Silver_Line_Stations_Proposed.shp" # Silver Line Station file
+
+silver_sf <- st_read(here("LYNX_Silver_Line_Stations_Proposed.shp")) %>%
+  st_transform(crs = 2264)
+
+# 1/2 mile (2,640 feet) buffers in EPSG:2264
+planbuf_1_2_mi <- st_buffer(silver_sf, dist = 2640)%>%
+  st_union()  # Combine all buffers into single polygon
+
+# Assign control status to properties that intersects buffer
+intersects_buffer4 <- st_intersects(pts_sf, planbuf_1_2_mi, sparse = FALSE)[,1]
+
+pts_sf <- pts_sf %>%
+        mutate(planctrl = ifelse(intersects_buffer4, 1, 0))
+
+planbas <- pts_sf[pts_sf$treat == 1 | pts_sf$planctrl == 1, ]
+
+# Plot to check
+planplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = planbas, aes(color = as.factor(planbas$treat)), size = 1, alpha = 0.7) +
+  geom_sf(data = planbuf_1_2_mi, fill = NA, color = "orange", linewidth = 0.3) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = silver_sf, color = "grey25", size = 1, shape = 16) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    title = "Planned stations"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+planplot
+```
+
+Setup PSM-based controls 
+
+1--- based on property characteristics only (in pre- and post)
+2--- based on neighborhood characteristics (just from pre-period, i.e, 2005-2009 ACS)
+3--- based on property (pre-post) in matched neighborhoods (from 2)
+
+```{r}
+# PSM on property characteristics only
+
+# 2004-2017 (pre-opening)
+predata <- pts_sf[pts_sf$postopen == 0, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths + distcc_mi,
+                    data = predata,
+                    method = "optimal",
+                    ratio = 1)
+
+psmpre_prop <- match.data(match.out) #extract matched data
+
+# 2018-2023 (post-opening)
+postdata <- pts_sf[pts_sf$postopen == 1, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths + distcc_mi,
+                    data = postdata,
+                    method = "optimal",
+                    ratio = 1)
+
+psmpost_prop <- match.data(match.out) #extract matched data
+
+# merge pre- and post data and add year FEs
+psm_prop <- rbind(psmpre_prop, psmpost_prop)
+
+psm_prop$year_fe <- factor(psm_prop$year)
+psm_prop$year_fe <- relevel(psm_prop$year_fe, ref = "2017")
+
+psm_prop %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+# Plot: tract outlines + discretely colored points
+psmpplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = psm_prop, aes(color = as.factor(psm_prop$treat)), size = 1, alpha = 0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    title = "PSM property"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+psmpplot
+```
+
+```{r}
+# PSM on pre-opening neighborhood characteristics only
+
+# Assign no control status to tracts that intersect 1.5mile buffer of ANY station (new or old)
+intersects_buffer4 <- st_intersects(mecktrt, nogo, sparse = FALSE)[,1]
+
+mecktrt <- mecktrt %>%
+        mutate(notrt = ifelse(intersects_buffer4, 1, 0))
+
+# Drop observations where notrt == 1 AND treat == 0 (since these can't serve as controls, but we want to keep the treatment tracts)  
+mecksel <- mecktrt %>%
+  filter(!(notrt == 1 & treattrt == 0))
+
+# match
+match.out <- matchit(treattrt ~ popden + huden + ownoccp + emprate + whitep + bachp + distcc_mi_trt,
+                    data = mecksel,
+                    method = "optimal",
+                    ratio = 1)
+
+psm_trt <- match.data(match.out) #extract matched data
+
+# extract all properties that are within these neighborhoods (but only treated within 1/2 mile of stations) and add year FEs
+psm_neig <- pts_sf[lengths(st_within(pts_sf, psm_trt)) > 0, ]
+psm_neig <- psm_neig %>%
+  filter(!(treattrt == 1 & treat == 0))
+psm_neig$year_fe <- factor(psm_neig$year)
+psm_neig$year_fe <- relevel(psm_neig$year_fe, ref = "2017")
+
+psm_trt %>% count(treattrt) #get count of treatment vs control tracts
+psm_neig %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+psmnplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = psm_trt, aes(fill = factor(treattrt)), color = "grey60", size = 0.1) +
+  geom_sf(data = psm_neig, aes(color = as.factor(treat)), size = 1, alpha=0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    name = "Treatment tracts",
+    values = c("0" = "lightgray", "1" = "steelblue")
+  ) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+  ) +
+  labs(title = "PSM neighborhood")
+
+psmnplot
+```
+
+```{r}
+# PSM on property characteristics within matched neighborhoods
+
+# 2004-2017 (pre-opening)
+predata <- psm_neig[psm_neig$postopen == 0, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths, # + distcc_mi - take this one out since we have already matched tracts based on this
+                    data = predata,
+                    method = "optimal",
+                    ratio = 1)
+
+psmpre_propneig <- match.data(match.out) #extract matched data
+
+# 2018-2023 (post-opening)
+postdata <- psm_neig[psm_neig$postopen == 1, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths, # + distcc_mi - take this one out since we have already matched tracts based on this
+                    data = postdata,
+                    method = "optimal",
+                    ratio = 1)
+
+psmpost_propneig <- match.data(match.out) #extract matched data
+
+# merge pre- and post data and add year FEs
+psm_propneig <- rbind(psmpre_propneig, psmpost_propneig)
+
+psm_propneig$year_fe <- factor(psm_propneig$year)
+psm_propneig$year_fe <- relevel(psm_propneig$year_fe, ref = "2017")
+
+psm_propneig %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+psmbplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = psm_trt, aes(fill = factor(treattrt)), color = "grey60", size = 0.1) +
+  geom_sf(data = psm_propneig, aes(color = as.factor(treat)), size = 1, alpha=0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    name = "Treatment tracts",
+    values = c("0" = "lightgray", "1" = "steelblue")
+  ) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+  ) +
+  labs(title = "PSM both")
+
+psmbplot
+```
+
+Setup CEM-based controls (https://cran.r-project.org/web/packages/cem/vignettes/cem.pdf)
+
+1--- based on property characteristics only (in pre- and post)
+2--- based on neighborhood characteristics (just in pre-period, i.e, 2005-2009 ACS)
+3--- based on property characteristics (pre-post) in matched neighborhoods (from 2)
+
+```{r}
+# CEM on property characteristics only
+
+# 2004-2017 (pre-opening)
+predata <- pts_sf[pts_sf$postopen == 0, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths + distcc_mi,
+                    data = predata,
+                    method = "cem",
+                    k2k=TRUE) #k2k = TRUE --> 1:1 matching within stratum using distance = "mahalanobis" as default
+
+cempre_prop <- match.data(match.out) #extract matched data
+
+# 2018-2023 (post-opening)
+postdata <- pts_sf[pts_sf$postopen == 1, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths + distcc_mi,
+                    data = postdata,
+                    method = "cem",
+                    k2k=TRUE)
+
+cempost_prop <- match.data(match.out) #extract matched data
+
+# merge pre- and post data and add year FEs
+cem_prop <- rbind(cempre_prop, cempost_prop)
+
+cem_prop$year_fe <- factor(cem_prop$year)
+cem_prop$year_fe <- relevel(cem_prop$year_fe, ref = "2017")
+
+cem_prop %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+# Plot: tract outlines + discretely colored points
+cempplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = cem_prop, aes(color = as.factor(cem_prop$treat)), size = 1, alpha = 0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    title = "CEM property"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank()
+  )
+
+cempplot
+```
+
+```{r}
+# CEM on pre-opening neighborhood characteristics only
+
+# match - automated coarsening cannot match units - hence reducing number of bins/cutpoints into quintiles
+cutpoints <- list(popden = "q5", huden = 1, ownoccp = "q4", emprate = "q4", whitep = "q4", bachp = "q4", distcc_mi_trt = "q4")
+match.out <- matchit(treattrt ~ popden + huden + ownoccp + emprate + whitep + bachp + distcc_mi_trt,
+                    data = mecksel,
+                    method = "cem",
+                    cutpoints = cutpoints,
+                    k2k=TRUE)
+
+cem_trt <- match.data(match.out) #extract matched data
+
+# extract all properties that are within these neighborhoods (but only treated within 1/2 mile of stations) and add year FEs
+cem_neig <- pts_sf[lengths(st_within(pts_sf, cem_trt)) > 0, ]
+cem_neig <- cem_neig %>%
+  filter(!(treattrt == 1 & treat == 0))
+cem_neig$year_fe <- factor(cem_neig$year)
+cem_neig$year_fe <- relevel(cem_neig$year_fe, ref = "2017")
+
+cem_trt %>% count(treattrt) #get count of treatment vs control tracts
+cem_neig %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+cemnplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = cem_trt, aes(fill = factor(treattrt)), color = "grey60", size = 0.1) +
+  geom_sf(data = cem_neig, aes(color = as.factor(treat)), size = 1, alpha=0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    name = "Treatment tracts",
+    values = c("0" = "lightgray", "1" = "steelblue")
+  ) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  theme_minimal() +
+    theme(
+    panel.grid.major = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+  ) +
+  labs(title = "CEM neighborhood")
+
+cemnplot
+```
+
+```{r}
+# CEM on property characteristics within matched neighborhoods
+
+# 2004-2017 (pre-opening)
+predata <- cem_neig[cem_neig$postopen == 0, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths, # + distcc_mi - take this one out since we have already matched tracts based on this
+                    data = predata,
+                    method = "cem",
+                    k2k=TRUE)
+
+cempre_propneig <- match.data(match.out) #extract matched data
+
+# 2018-2023 (post-opening)
+postdata <- cem_neig[cem_neig$postopen == 1, ]
+
+match.out <- matchit(treat ~ year + lot_ac + age + heatedarea + bedrooms + fullbaths, # + distcc_mi - take this one out since we have already matched tracts based on this
+                    data = postdata,
+                    method = "cem",
+                    k2k=TRUE)
+
+cempost_propneig <- match.data(match.out) #extract matched data
+
+# merge pre- and post data and add year FEs
+cem_propneig <- rbind(cempre_propneig, cempost_propneig)
+
+cem_propneig$year_fe <- factor(cem_propneig$year)
+cem_propneig$year_fe <- relevel(cem_propneig$year_fe, ref = "2017")
+
+cem_propneig %>% count(as.factor(treat)) #get count of treatment vs control properties
+
+cembplot <- ggplot() +
+  geom_sf(data = mecktrt, fill = NA, color = "grey60", linewidth = 0.25) +
+  geom_sf(data = cem_trt, aes(fill = factor(treattrt)), color = "grey60", size = 0.1) +
+  geom_sf(data = cem_propneig, aes(color = as.factor(treat)), size = 1, alpha=0.7) +
+  geom_sf(data = stations_sf, color = "black", size = 1, shape = 16) +
+  geom_sf(data = buffers_1_2_mi, fill = NA, color = "black", linewidth = 0.3) +
+  scale_fill_manual(
+    name = "Treatment tracts",
+    values = c("0" = "lightgray", "1" = "steelblue")
+  ) +
+    scale_color_manual(
+    name = "Treatment",
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  theme_minimal() +
+    theme(
+    panel.grid.major = element_blank(),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+  ) +
+  labs(title = "CEM both")
+
+cembplot
+```
+
+Big table with descriptive stats of treat vs ctrl across all specs only for pre-period
+
+```{r}
+# list dfs
+dfs <- list(Rest = pts_sf, Distance = distbas, Planned = planbas, PSMprop = psm_prop, PSMneig = psm_neig, PSMboth = psm_propneig, 
+            CEMprop = cem_prop, CEMneig = cem_neig, CEMboth = cem_propneig)
+
+big_df <- dfs %>%
+  map(~ select(.x, treat, price, pricesqf, lot_ac, age, heatedarea, bedrooms, fullbaths, distcc_mi, popden, huden, ownoccp, emprate, 
+               whitep, bachp, postopen)) %>%  # keep only these variables
+  bind_rows(.id = "source")     # adds column with list element name
+
+big_df <- st_drop_geometry(big_df)
+
+big_df <- big_df %>%
+      rename(distcc = distcc_mi,
+             lotsize = lot_ac)
+
+big_df <- big_df[big_df$postopen == 0, ]
+
+big_df$postopen <- NULL
+
+# summarize means, sds, and Ns
+summary_list <- big_df %>%
+  group_by(source, treat) %>%
+  summarise(across(where(is.numeric),
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        sd   = ~sd(.x, na.rm = TRUE)),
+                   .names = "{.col}_{.fn}"),
+            .groups = "drop")
+
+# compute differences in means
+diffs <- summary_list %>%
+  select(source, treat, ends_with("_mean")) %>%
+  pivot_longer(cols = ends_with("_mean"),
+               names_to = "variable", values_to = "mean") %>%
+  pivot_wider(names_from = treat, values_from = mean,
+              names_prefix = "treat_") %>%
+  mutate(diff = treat_1 - treat_0) %>%
+  select(source, variable, diff)
+
+# reshape into mean (SD) format
+summary_long <- summary_list %>%
+  pivot_longer(cols = -c(source, treat),
+               names_to = c("variable", ".value"),
+               names_sep = "_") %>%
+  mutate(mean_sd = paste0(round(mean, 2), " (", round(sd, 2), ")")) %>%
+  select(source, treat, variable, mean_sd)
+
+# define desired order
+dataset_order <- c("Rest", "Distance", "Planned", 
+                   "PSMprop", "PSMneig", "PSMboth", 
+                   "CEMprop", "CEMneig", "CEMboth")
+
+# ensure 'source' is a factor with the correct order
+summary_long$source <- factor(summary_long$source, levels = dataset_order)
+diffs$source <- factor(diffs$source, levels = dataset_order)
+
+# rebuild summary_wide in correct order
+summary_wide_ordered <- summary_long %>%
+  unite(col = "colname", source, treat, sep = "_treat") %>%
+  pivot_wider(names_from = colname, values_from = mean_sd)
+
+# order columns based on dataset_order
+ordered_columns <- as.vector(t(outer(dataset_order, c("0", "1"), paste, sep = "_treat")))
+ordered_columns <- intersect(ordered_columns, colnames(summary_wide_ordered))
+summary_wide_ordered <- summary_wide_ordered[, c("variable", ordered_columns)]
+
+# create flextable
+desc_ft <- flextable(summary_wide_ordered) %>% autofit()
+
+# export to Word
+doc1 <- read_docx()
+doc1 <- body_add_flextable(doc1, desc_ft)
+#print(doc1, target = "descriptive_stats.docx") #comment out to not override nicely formatted table
+
+diffs_clean <- diffs %>%
+  pivot_wider(names_from = source, values_from = diff) %>%
+  select(variable, all_of(dataset_order))
+
+diff_ft <- flextable(diffs_clean) %>% autofit()
+
+# export to Word
+doc2 <- read_docx()
+doc2 <- body_add_flextable(doc2, diff_ft)
+#print(doc2, target = "difference_means.docx") #comment out to not override nicely formatted table
+```
+
+
+Make a fancy plot to visualize differences.
+
+```{r}
+# First, reshape to separate treatment and control statistics
+smd_data <- summary_list %>%
+  # Separate into control (treat=0) and treatment (treat=1)
+  pivot_longer(cols = ends_with(c("_mean", "_sd")),
+               names_to = c("variable", "stat"),
+               names_sep = "_(?=mean|sd)") %>%
+  pivot_wider(names_from = c(treat, stat),
+              values_from = value,
+              names_sep = "_") %>%
+  # Now we have: source, variable, 0_mean, 0_sd, 1_mean, 1_sd
+  rename(control_mean = `0_mean`,
+         control_sd = `0_sd`,
+         treat_mean = `1_mean`,
+         treat_sd = `1_sd`)
+
+# Calculate SMD
+smd_data <- smd_data %>%
+  mutate(
+    # Pooled standard deviation
+    pooled_sd = sqrt((control_sd^2 + treat_sd^2) / 2),
+    # Standardized mean difference
+    smd = (treat_mean - control_mean) / pooled_sd,
+    # Absolute SMD for summaries
+    abs_smd = abs(smd)
+  )
+
+# Select key strategies to highlight
+key_strategies <- c("Rest", "Distance", "PSMboth", "CEMboth")
+smd_subset <- smd_data %>%
+  filter(source %in% key_strategies)
+
+p_abs <- ggplot(smd_data, aes(x = abs_smd, y = variable_label, 
+                               color = source)) +
+  geom_vline(xintercept = 0.1, linetype = "dashed", 
+             color = "black", linewidth = 0.5) +
+  geom_vline(xintercept = 0.25, linetype = "dotted", 
+             color = "black", linewidth = 0.5) +
+  geom_point(size = 3, alpha = 0.7, position = position_dodge(width = 0.5)) +
+  scale_color_manual(values = strategy_colors, name = "Strategy") +
+  labs(
+    title = "Absolute Standardized Mean Differences by Strategy",
+    x = "Absolute SMD",
+    y = NULL,
+    caption = "Dashed line: excellent balance (0.1); Dotted line: acceptable balance (0.25)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.position = "right"
+  ) +
+  scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25))
+
+print(p_abs)
+ggsave("balance_plot_absolute.png", plot = p_abs, width = 12, height = 8, dpi = 300)
+
+
+# Create a wide table of SMDs for publication
+smd_table <- smd_data %>%
+  select(variable_label, source, smd) %>%
+  pivot_wider(names_from = source, values_from = smd) %>%
+  arrange(variable_label)
+
+# Round for readability
+smd_table <- smd_table %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+```
+
+
+
+
+Big graph with sqf price trends for treatment and all different control groups
+
+```{r}
+# List of dataframes
+dfs <- list(
+  Rest = pts_sf, Distance = distbas, Planned = planbas,
+  PSMprop = psm_prop, PSMneig = psm_neig, PSMboth = psm_propneig,
+  CEMprop = cem_prop, CEMneig = cem_neig, CEMboth = cem_propneig
+)
+
+# Desired facet order
+facet_order <- c("Rest", "Distance", "Planned", 
+                 "PSMprop", "PSMneig", "PSMboth", 
+                 "CEMprop", "CEMneig", "CEMboth")
+
+# Summarize pricesqf by year and treat for each dataset
+summarized_list <- imap(dfs, function(df, name) {
+  df %>%
+    group_by(year, treat) %>%
+    summarize(mean_price = mean(price, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Group = name)
+})
+
+# Combine all summaries
+trend_data <- bind_rows(summarized_list)
+
+# Set factor levels for desired facet order
+trend_data$Group <- factor(trend_data$Group, levels = facet_order)
+
+# Plot with custom facet order
+p <- ggplot(trend_data, aes(x = year, y = mean_price, color = as.factor(treat))) +
+  geom_line(size = 0.8) +
+  geom_vline(xintercept = 2018, linetype = "dotted", color = "lightgray", size = 0.8) +
+  facet_wrap(~ Group, scales = "fixed") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black")
+  ) +
+  scale_color_manual(
+    values = c("1" = "#C71585", "0" = "gray")
+  ) +
+  labs(
+    x = "Year",
+    y = "Average price",
+    color = "Treatment",
+    size = 8
+  )
+
+p
+
+# Export 
+ggsave("price_trends.png", plot = p, width = 10, height = 6, dpi = 600)
+```
+
+Estimate DID models with the following controls (incl. year and tract FEs):
+--- all homes outside 1.5mile of existing or new stations 
+--- homes 1.5-2miles from station 
+--- homes within 0.5-mile buffer of planned stations 
+--- PSM-matched controls based on property characteristics
+--- PSM-matched controls based on neighborhood characteristics
+--- PSM-matched controls based on property characteristics in matched neighborhoods
+--- CEM-matched controls based on property characteristics
+--- CEM-matched controls based on neighborhood characteristics
+--- CEM-matched controls based on property characteristics in matched neighborhoods
+
+```{r}
+# output list for model results
+did_models <- list()
+
+# loop through each dataset
+for (name in names(dfs)) {
+  df <- dfs[[name]]
+  
+  # create additional variables
+  df$year_fe <- factor(df$year)
+  df$trt_fe <- factor(df$GEOID)
+  df$age2 <- df$age^2
+  df$distcc_mi2 <- df$distcc_mi^2
+  df$heatedarea2 <- df$heatedarea^2
+  df$lnprice <- log(df$price)
+  
+  # run the DID regression
+  did_model <- lm(lnprice ~ treat + postopen + treat*postopen +
+                    lot_ac + age + age2 + heatedarea + heatedarea2 +
+                    bedrooms + fullbaths + distcc_mi + distcc_mi2 +
+                    year_fe + trt_fe, #we do not include pre-treatment trt characteristics since they will be perfectly collinear with trt_fe
+                  data = df)
+  
+  # store model in list - access: e.g., did_models$did_rest
+  did_models[[paste0("did_", tolower(name))]] <- did_model
+}
+```
+
+Results
+
+```{r}
+
+# Define model names and access list
+model_names <- c("Rest", "Distance", "Planned", 
+                 "PSMprop", "PSMneig", "PSMboth", 
+                 "CEMprop", "CEMneig", "CEMboth")
+
+# Build a list of data frames of tidy model output
+model_list <- map(model_names, function(name) {
+  model <- did_models[[paste0("did_", tolower(name))]]
+  
+  tidy(model) %>%
+    filter(!grepl("year_fe|trt_fe", term)) %>%
+    mutate(
+      estimate = round(estimate, 3),
+      stars = case_when(
+        p.value <= 0.01 ~ "***",
+        p.value <= 0.05 ~ "**",
+        p.value <= 0.10 ~ "*",
+        TRUE ~ ""
+      ),
+      estimate_starred = paste0(estimate, stars)
+    ) %>%
+    select(term, !!name := estimate_starred)
+})
+
+# Combine all model outputs by term
+model_table <- reduce(model_list, full_join, by = "term")
+
+# Split out intercept and prioritize 'treat:postopen'
+intercept_row <- filter(model_table, term == "(Intercept)")
+main_rows <- filter(model_table, term != "(Intercept)")
+
+treat_postopen_row <- main_rows %>% filter(term == "treat:postopen")
+other_main_rows <- main_rows %>% filter(term != "treat:postopen")
+main_rows <- bind_rows(treat_postopen_row, other_main_rows)
+
+# Create fixed effect rows
+fe_rows <- data.frame(
+  term = c("year_fe", "trt_fe"),
+  matrix("Yes", nrow = 2, ncol = length(model_names),
+         dimnames = list(NULL, model_names))
+)
+
+# Extract model stats and reshape
+# Create empty rows for stats
+adj_r2_row <- data.frame(term = "Adjusted R-squared", stringsAsFactors = FALSE)
+n_row <- data.frame(term = "N", stringsAsFactors = FALSE)
+
+# Fill in values for each model
+for (name in model_names) {
+  model <- did_models[[paste0("did_", tolower(name))]]
+  adj_r2_row[[name]] <- round(summary(model)$adj.r.squared, 3)
+  n_row[[name]] <- nobs(model)
+}
+
+# Convert all parts to character
+main_rows[] <- lapply(main_rows, as.character)
+fe_rows[] <- lapply(fe_rows, as.character)
+intercept_row[] <- lapply(intercept_row, as.character)
+adj_r2_row[] <- lapply(adj_r2_row, as.character)
+n_row[] <- lapply(n_row, as.character)
+
+# Bind into final table
+final_table <- bind_rows(
+  main_rows,
+  fe_rows,
+  intercept_row,
+  adj_r2_row,
+  n_row
+)
+
+# View
+print(final_table)
+```
+
+Export results table to Word
+```{r}
+# Create a Word document
+doc <- read_docx()
+
+# Convert final_table to flextable
+ft <- flextable(final_table)
+ft <- autofit(ft)
+
+# Add the table to the Word document
+doc <- body_add_flextable(doc, ft)
+
+# Save the Word file
+#print(doc, target = "did_model_results.docx") #comment out to not override nicely formatted table
+```
+
+Export all the maps
+```{r}
+combined_map <- (restplot | distplot | planplot) /
+                (psmpplot | psmnplot | psmbplot) /
+                (cempplot | cemnplot | cembplot) +
+  plot_layout(guides = "collect") & 
+  theme(legend.position = "bottom")
+
+# export
+ggsave("combined_maps.png", plot = combined_map, width = 12, height = 12, dpi = 600)
+```
